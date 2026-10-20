@@ -4,10 +4,10 @@
 
 ## Dùng bản đã đóng gói
 
-Sau khi chạy `build.ps1`, mở `dist\ThaVaDoi\ThaVaDoi.exe`, hoặc giải nén `ThaVaDoi-Windows-0.4.0.zip` rồi chạy `ThaVaDoi.exe`. Giữ nguyên cả thư mục `ThaVaDoi` khi sao chép sang nơi khác. Bản đóng gói đã kèm bộ OCR tiếng Việt và tiếng Anh, không cần cài Tesseract riêng.
+Sau khi chạy `build.ps1`, mở `dist\ThaVaDoi\ThaVaDoi.exe`, hoặc giải nén `ThaVaDoi-Windows-0.5.0.zip` rồi chạy `ThaVaDoi.exe`. Giữ nguyên cả thư mục `ThaVaDoi` khi sao chép sang nơi khác. Bản đóng gói đã kèm bộ OCR tiếng Việt và tiếng Anh, không cần cài Tesseract riêng.
 
 1. Kéo DOCX, DOC, PDF, TXT, Markdown hoặc ảnh vào nút tím ở mép phải.
-2. Chọn thao tác trong menu. Nếu gộp nhiều PDF, kéo các dòng trong danh sách để sắp thứ tự.
+2. Chọn chức năng trong nhóm **Gợi ý**, hoặc mở **Tất cả / Chuyển đổi / OCR / Công cụ PDF**. Có thể tìm bằng từ khóa không dấu như `nen` hoặc `sap xep`. Nút **Xem nhanh** cạnh số tệp sẽ hiện nội dung tệp đầu khi cần. Nếu gộp nhiều PDF, kéo các dòng trong danh sách để sắp thứ tự.
 3. Tệp kết quả nằm trong thư mục `DaChuyenDoi` cạnh tệp gốc đầu tiên. Nút **Đổi…** cho phép chọn nơi khác.
 4. Bấm **Mở tệp** hoặc **Mở thư mục** khi hoàn tất. Biểu tượng ở khay hệ thống có lệnh mở lại, ẩn nút và thoát.
 5. Nếu muốn mở từ File Explorer, bấm **Bật chuột phải** ở đầu menu. Nhấp phải một tệp được hỗ trợ rồi chọn **Mở bằng Thả & Đổi**. Với nhiều tệp, chọn tất cả, nhấp phải và dùng **Gửi tới → Thả & Đổi**. Bấm **Tắt chuột phải** để gỡ cả hai lệnh. Trên Windows 11, chúng có thể nằm dưới **Hiển thị thêm tùy chọn**.

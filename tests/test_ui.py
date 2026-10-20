@@ -2,7 +2,7 @@ from pathlib import Path
 
 from docx import Document
 from PIL import Image
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 from PySide6.QtCore import QPoint, QPointF, Qt, QMimeData, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtTest import QTest
@@ -138,4 +138,37 @@ def test_panel_offers_queue_for_mixed_files(tmp_path: Path):
     assert panel.queue_dialog is not None
     assert panel.queue_dialog.table.rowCount() == 2
     panel.queue_dialog.close()
+    panel.close()
+
+
+def test_action_picker_groups_and_search_without_accents(tmp_path: Path):
+    app = QApplication.instance() or QApplication([])
+    app.setStyleSheet(STYLESHEET)
+    source = tmp_path / "sample.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=400)
+    with source.open("wb") as output:
+        writer.write(output)
+    writer.close()
+
+    panel = FilePanel(detect_capabilities())
+    panel.set_files((source,))
+    panel.show()
+    app.processEvents()
+    assert not panel.preview.isVisible()
+    assert [panel.group_tabs.tabData(i) for i in range(panel.group_tabs.count())] == [
+        "recommended", "all", "Chuyển đổi", "Nhận dạng chữ", "Công cụ PDF"
+    ]
+    if panel.capabilities.tesseract:
+        assert panel.action_tiles[0].action.key == "pdf_ocr_searchable"
+    assert "compress_pdf" in {tile.action.key for tile in panel.action_tiles}
+    pdf_tab = next(i for i in range(panel.group_tabs.count()) if panel.group_tabs.tabData(i) == "Công cụ PDF")
+    panel.group_tabs.setCurrentIndex(pdf_tab)
+    assert all(tile.action.category == "Công cụ PDF" for tile in panel.action_tiles)
+    panel.action_search.setText("sap xep")
+    assert [tile.action.key for tile in panel.action_tiles] == ["organize_pdf"]
+    panel.action_search.setText("ocr")
+    assert panel.action_tiles and all(tile.action.category == "Nhận dạng chữ" for tile in panel.action_tiles)
+    panel.preview_button.click()
+    assert panel.preview.isVisible()
     panel.close()

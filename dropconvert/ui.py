@@ -3,8 +3,10 @@ from __future__ import annotations
 import getpass
 import json
 import sys
+import unicodedata
 from pathlib import Path
 
+from pypdf import PdfReader
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -28,6 +30,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSystemTrayIcon,
+    QTabBar,
     QVBoxLayout,
     QWidget,
 )
@@ -54,6 +57,13 @@ QFrame#Card { background: #191b2c; border: 1px solid #343751; border-radius: 18p
 QLabel#Title { font-size: 20px; font-weight: 700; color: #ffffff; }
 QLabel#Muted { color: #a6a9c2; }
 QLabel#Section { color: #bfc3dc; font-size: 11px; font-weight: 700; }
+QLineEdit { background: #22243a; border: 1px solid #414560; border-radius: 9px;
+            padding: 6px 9px; selection-background-color: #5a50ba; }
+QLineEdit:focus { border-color: #897bff; }
+QTabBar::tab { background: #282b43; border: 1px solid #414560; color: #bfc3dc;
+               border-radius: 8px; padding: 6px 9px; margin-right: 4px; }
+QTabBar::tab:hover { background: #393d5d; }
+QTabBar::tab:selected { background: #6457e9; color: #ffffff; border-color: #8277ff; }
 QPushButton { background: #2c3049; color: #f4f4fb; border: 1px solid #414560;
               border-radius: 10px; padding: 8px 12px; font-weight: 600; }
 QPushButton:hover { background: #393d5d; border-color: #7770ed; }
@@ -88,6 +98,35 @@ def _paths_from_drop(event) -> tuple[Path, ...]:
     if not event.mimeData().hasUrls():
         return ()
     return normalize_files(url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile())
+
+
+def _search_text(value: str) -> str:
+    text = unicodedata.normalize("NFD", value.casefold()).replace("đ", "d")
+    return "".join(character for character in text if unicodedata.category(character) != "Mn")
+
+
+def _recommended_actions(files: tuple[Path, ...], actions: tuple[Action, ...], capabilities: Capabilities, scanned_pdf: bool = False) -> tuple[Action, ...]:
+    if not files:
+        return ()
+    suffix = files[0].suffix.lower()
+    if suffix == ".pdf":
+        if len(files) > 1:
+            keys = ("merge_pdf", "compress_pdf", "pdf_ocr_searchable", "pdf_docx")
+        elif scanned_pdf:
+            keys = ("pdf_ocr_searchable", "pdf_ocr_docx", "pdf_ocr_txt", "compress_pdf")
+        else:
+            keys = ("pdf_docx", "pdf_txt", "compress_pdf", "organize_pdf")
+    elif suffix == ".docx":
+        keys = ("docx_pdf", "docx_txt", "docx_md")
+    elif suffix == ".doc":
+        keys = ("doc_docx", "doc_pdf")
+    elif suffix in {".txt", ".md"}:
+        keys = ("text_docx", "text_pdf")
+    else:
+        keys = ("image_pdf", "image_ocr_searchable", "image_ocr_txt")
+    by_key = {action.key: action for action in actions}
+    available = tuple(by_key[key] for key in keys if key in by_key and not unavailable_reason(by_key[key], capabilities))
+    return available or tuple(by_key[key] for key in keys if key in by_key)
 
 
 class FloatingButton(QWidget):
@@ -278,6 +317,8 @@ class FilePanel(QWidget):
         self.worker: ConversionWorker | None = None
         self.queue_dialog: QueueDialog | None = None
         self.action_tiles: list[ActionTile] = []
+        self.all_actions: tuple[Action, ...] = ()
+        self.scanned_pdf = False
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAcceptDrops(True)
@@ -335,13 +376,19 @@ class FilePanel(QWidget):
         files_label.setObjectName("Section")
         files_head.addWidget(files_label)
         files_head.addStretch()
+        self.preview_button = QPushButton("Xem nhanh ▾")
+        self.preview_button.setObjectName("Small")
+        self.preview_button.setCheckable(True)
+        self.preview_button.setToolTip("Hiện hoặc ẩn nội dung tệp đầu tiên")
+        self.preview_button.toggled.connect(self._toggle_preview)
+        files_head.addWidget(self.preview_button)
         self.count_label = QLabel("")
         self.count_label.setObjectName("Muted")
         files_head.addWidget(self.count_label)
         layout.addLayout(files_head)
 
         self.file_list = QListWidget()
-        self.file_list.setFixedHeight(102)
+        self.file_list.setFixedHeight(80)
         self.file_list.setDragDropMode(QAbstractItemView.InternalMove)
         self.file_list.setToolTip("Kéo các dòng để đổi thứ tự trước khi gộp PDF")
         layout.addWidget(self.file_list)
@@ -351,21 +398,29 @@ class FilePanel(QWidget):
         self.queue_button.clicked.connect(self._open_queue)
         layout.addWidget(self.queue_button)
 
-        preview_label = QLabel("XEM NHANH TỆP ĐẦU")
-        preview_label.setObjectName("Section")
-        layout.addWidget(preview_label)
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
-        self.preview.setFixedHeight(72)
+        self.preview.setFixedHeight(56)
+        self.preview.hide()
         layout.addWidget(self.preview)
 
-        action_label = QLabel("THAO TÁC PHÙ HỢP")
-        action_label.setObjectName("Section")
-        layout.addWidget(action_label)
+        self.action_label = QLabel("CHỌN CHỨC NĂNG")
+        self.action_label.setObjectName("Section")
+        layout.addWidget(self.action_label)
+        self.group_tabs = QTabBar()
+        self.group_tabs.setDrawBase(False)
+        self.group_tabs.setExpanding(False)
+        self.group_tabs.currentChanged.connect(self._render_actions)
+        layout.addWidget(self.group_tabs)
+        self.action_search = QLineEdit()
+        self.action_search.setPlaceholderText("Tìm chức năng, ví dụ: OCR, nén, Word…")
+        self.action_search.setClearButtonEnabled(True)
+        self.action_search.textChanged.connect(self._render_actions)
+        layout.addWidget(self.action_search)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.scroll.setMinimumHeight(170)
+        self.scroll.setMinimumHeight(160)
         self.action_host = QWidget()
         self.action_layout = QGridLayout(self.action_host)
         self.action_layout.setContentsMargins(0, 0, 5, 0)
@@ -475,40 +530,111 @@ class FilePanel(QWidget):
     def _refresh(self) -> None:
         files = self._ordered_files()
         self.count_label.setText(f"{len(files)} tệp" if files else "Chưa có tệp")
-        self.preview.setPlainText(preview_text(files[0]) if files else "Thả DOCX, DOC, PDF, TXT, Markdown hoặc ảnh vào đây.")
+        self.preview_button.setEnabled(bool(files))
+        if not files and self.preview_button.isChecked():
+            self.preview_button.setChecked(False)
+        if self.preview_button.isChecked():
+            self.preview.setPlainText(preview_text(files[0]) if files else "")
         folder = self._output_dir()
         self.output_label.setText(str(folder) if folder else "Cạnh tệp gốc / DaChuyenDoi")
         self.output_label.setToolTip(str(folder) if folder else "")
+        self.all_actions = available_actions(files)
+        self.scanned_pdf = False
+        if len(files) == 1 and files[0].suffix.lower() == ".pdf":
+            try:
+                reader = PdfReader(str(files[0]))
+                if reader.pages:
+                    text = reader.pages[0].extract_text() or ""
+                    self.scanned_pdf = sum(character.isalnum() for character in text) < 16
+            except Exception:
+                pass
+        self.action_search.blockSignals(True)
+        self.action_search.clear()
+        self.action_search.blockSignals(False)
+        self.group_tabs.blockSignals(True)
+        while self.group_tabs.count():
+            self.group_tabs.removeTab(0)
+        if self.all_actions:
+            groups = (("Gợi ý", "recommended"), ("Tất cả", "all"),
+                      ("Chuyển đổi", "Chuyển đổi"), ("OCR", "Nhận dạng chữ"),
+                      ("Công cụ PDF", "Công cụ PDF"))
+            for label, key in groups:
+                if key in {"recommended", "all"} or any(action.category == key for action in self.all_actions):
+                    index = self.group_tabs.addTab(label)
+                    self.group_tabs.setTabData(index, key)
+            self.group_tabs.setCurrentIndex(0)
+        self.group_tabs.blockSignals(False)
+        self.group_tabs.setVisible(bool(self.all_actions))
+        self.action_search.setVisible(bool(self.all_actions))
+        self._render_actions()
+        self.queue_button.setVisible(len(files) > 1)
+        self.queue_button.setEnabled(len(files) > 1 and not (self.worker and self.worker.isRunning()))
+        self.status.setText("Thứ tự trong danh sách sẽ dùng khi gộp PDF." if len(files) > 1 and all(p.suffix.lower() == ".pdf" for p in files) else "Chọn hàng đợi để xử lý tệp lẫn định dạng; tệp gốc luôn được giữ nguyên.")
+        self.progress_bar.hide()
+        self.open_file.hide()
+        self.open_folder.hide()
+
+    def _toggle_preview(self, expanded: bool) -> None:
+        self.preview.setVisible(expanded)
+        self.preview_button.setText("Ẩn xem nhanh ▴" if expanded else "Xem nhanh ▾")
+        if expanded:
+            files = self._ordered_files()
+            self.preview.setPlainText(preview_text(files[0]) if files else "")
+
+    def _render_actions(self, *_args) -> None:
         while self.action_layout.count():
             item = self.action_layout.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.deleteLater()
         self.action_tiles.clear()
-        actions = available_actions(files)
+        files = self._ordered_files()
+        query = _search_text(self.action_search.text().strip())
+        if query:
+            actions = tuple(action for action in self.all_actions
+                            if query in _search_text(action.label + " " + action.description + " " + action.category))
+            actions = tuple(sorted(actions, key=lambda action: (
+                query not in _search_text(action.label),
+                not _search_text(action.label).startswith(query),
+            )))
+            self.action_label.setText(f"KẾT QUẢ TÌM KIẾM · {len(actions)}")
+        else:
+            group = self.group_tabs.tabData(self.group_tabs.currentIndex()) if self.group_tabs.count() else None
+            if group == "recommended":
+                actions = _recommended_actions(files, self.all_actions, self.capabilities, self.scanned_pdf)
+            elif group == "all":
+                actions = self.all_actions
+            else:
+                actions = tuple(action for action in self.all_actions if action.category == group)
+            self.action_label.setText(f"CHỌN CHỨC NĂNG · {len(actions)}" if actions else "CHỌN CHỨC NĂNG")
         if not actions:
-            help_label = QLabel("Chọn một tệp, hoặc nhiều tệp cùng loại để chuyển hàng loạt.")
+            if query:
+                message = "Không tìm thấy chức năng. Thử từ khóa khác."
+            elif files:
+                message = "Các tệp khác định dạng. Bấm ‘Mở hàng đợi từng tệp’ để chọn chức năng riêng."
+            else:
+                message = "Chọn hoặc thả tệp để xem các chức năng phù hợp."
+            help_label = QLabel(message)
             help_label.setObjectName("Muted")
             help_label.setWordWrap(True)
             self.action_layout.addWidget(help_label, 0, 0, 1, 2)
+        for row in range(20):
+            self.action_layout.setRowStretch(row, 0)
         for index, action in enumerate(actions):
             tile = ActionTile(action)
             reason = unavailable_reason(action, self.capabilities)
             if reason:
                 tile.setEnabled(False)
-                tile.setToolTip(reason)
+                tile.setToolTip(reason + "\n" + action.description)
             else:
                 tile.setToolTip(action.description)
             tile.activated.connect(self._start)
+            if self.worker and self.worker.isRunning():
+                tile.setEnabled(False)
             self.action_tiles.append(tile)
             self.action_layout.addWidget(tile, index // 2, index % 2)
         self.action_layout.setRowStretch((len(actions) + 1) // 2, 1)
         self.scroll.verticalScrollBar().setValue(0)
-        self.queue_button.setEnabled(bool(files) and not (self.worker and self.worker.isRunning()))
-        self.status.setText("Thứ tự trong danh sách sẽ dùng khi gộp PDF." if len(files) > 1 and all(p.suffix.lower() == ".pdf" for p in files) else "Chọn hàng đợi để xử lý tệp lẫn định dạng; tệp gốc luôn được giữ nguyên.")
-        self.progress_bar.hide()
-        self.open_file.hide()
-        self.open_folder.hide()
 
     def _choose_files(self) -> None:
         filter_text = "Tài liệu và ảnh (*.docx *.doc *.pdf *.txt *.md *.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff)"
@@ -582,6 +708,8 @@ class FilePanel(QWidget):
         self.choose_button.setEnabled(False)
         self.output_change.setEnabled(False)
         self.queue_button.setEnabled(False)
+        self.group_tabs.setEnabled(False)
+        self.action_search.setEnabled(False)
         for tile in self.action_tiles:
             tile.setEnabled(False)
         self.worker.start()
@@ -609,6 +737,8 @@ class FilePanel(QWidget):
         self.choose_button.setEnabled(True)
         self.output_change.setEnabled(True)
         self.queue_button.setEnabled(True)
+        self.group_tabs.setEnabled(True)
+        self.action_search.setEnabled(True)
         for tile in self.action_tiles:
             tile.setEnabled(not unavailable_reason(tile.action, self.capabilities))
 
@@ -659,7 +789,7 @@ def make_icon() -> QIcon:
 def main() -> int:
     app = QApplication([])
     app.setApplicationName("Thả & Đổi")
-    app.setApplicationVersion("0.4.0")
+    app.setApplicationVersion("0.5.0")
     app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(STYLESHEET)
     server_name = "ThaVaDoi-" + getpass.getuser()

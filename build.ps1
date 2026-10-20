@@ -60,6 +60,6 @@ if (Test-Path -LiteralPath $ocrLicense) {
 }
 
 Write-Host "Đã tạo: $projectRoot\dist\ThaVaDoi\ThaVaDoi.exe"
-$archive = Join-Path $projectRoot 'ThaVaDoi-Windows-0.4.0.zip'
+$archive = Join-Path $projectRoot 'ThaVaDoi-Windows-0.5.0.zip'
 Compress-Archive -LiteralPath $distTarget -DestinationPath $archive -CompressionLevel Optimal -Force
 Write-Host "Đã tạo: $archive"
